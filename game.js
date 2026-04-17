@@ -700,12 +700,41 @@ function drawUI() {
   ctx.fillStyle = C.dim; ctx.font = '8px Courier New'; ctx.textAlign = 'left';
   ctx.fillText('SZ ' + elemScale.toFixed(1) + '  B5\u25b2 B6\u25bc', 14, H - 14);
 
-  if (state.tick < 420) {
-    const alpha = Math.min(1, (420 - state.tick) / 90) * 0.65;
+  // ── CONTROL HINTS ──────────────────────────────────────────────────────────
+  function drawSegs(segs, y) {
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    let tw = 0; for (const [t] of segs) tw += ctx.measureText(t).width;
+    let cx = W / 2 - tw / 2;
+    for (const [t, col] of segs) { ctx.fillStyle = col; ctx.fillText(t, cx, y); cx += ctx.measureText(t).width; }
+  }
+
+  if (state.transferFrom !== null) {
+    // Contextual: piece in hand — tell player what to do
+    ctx.save();
+    ctx.fillStyle = 'rgba(10,10,10,0.88)'; ctx.fillRect(W/2 - 300, H - 58, 600, 42);
+    ctx.strokeStyle = C.accent; ctx.lineWidth = 1.5; ctx.strokeRect(W/2 - 300, H - 58, 600, 42);
+    ctx.font = 'bold 22px Courier New';
+    drawSegs([
+      ['\u2190 \u2192 ', C.accent], ['SELECT TEAMMATE', C.white],
+      ['   ', C.mid], ['B1 ', C.accent], ['PASS', C.ok],
+      ['   ', C.mid], ['B2 ', C.accent], ['CANCEL', C.white],
+    ], H - 37);
+    ctx.restore();
+  } else if (state.tick < 660) {
+    const alpha = Math.min(1, (660 - state.tick) / 90) * 0.82;
     ctx.save(); ctx.globalAlpha = alpha;
-    ctx.fillStyle = C.white; ctx.font = '9px Courier New'; ctx.textAlign = 'center';
-    ctx.fillText('L/R: navigate  \u00b7  B1: select/transfer  \u00b7  B2: discard', W/2, H - 40);
-    ctx.fillText('B3: expand  \u00b7  B4: compress  \u00b7  START: restart', W/2, H - 28);
+    ctx.fillStyle = 'rgba(10,10,10,0.78)'; ctx.fillRect(W/2 - 350, H - 72, 700, 60);
+    ctx.font = '22px Courier New';
+    drawSegs([
+      ['\u2190 \u2192 ', C.accent], ['AIM', C.white],
+      ['   ', C.mid], ['B1 ', C.accent], ['ASSIGN PIECE', C.white],
+      ['   ', C.mid], ['B2 ', C.accent], ['REJECT', C.white],
+    ], H - 52);
+    drawSegs([
+      ['TRANSFER: ', C.ok], ['B1 ', C.accent], ['lift', C.white],
+      [' \u2192 aim \u2192 ', C.mid], ['B1 ', C.accent], ['pass', C.white],
+      ['      ', C.mid], ['B3/B4 ', C.accent], ['spread team', C.white],
+    ], H - 26);
     ctx.restore();
   }
 }
