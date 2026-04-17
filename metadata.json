@@ -1,5 +1,5 @@
 {
-  "game_name": "<FILL THIS>",
-  "description": "<FILL THIS>",
-  "player_mode": "two_player"
+  "game_name": "PIVOT",
+  "description": "Keep your founding team aligned through every market pivot. Match falling role-pieces to your CTO, Designer, Founder and Sales — transfer between them before time collapses the team.",
+  "player_mode": "one_player"
 }
