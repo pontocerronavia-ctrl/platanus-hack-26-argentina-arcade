@@ -21,6 +21,9 @@ function scaleCanvas() {
 scaleCanvas();
 window.addEventListener('resize', scaleCanvas);
 
+// ─── ELEMENT SCALE (B5=larger, B6=smaller, persists across levels) ────────────
+let elemScale = 2.0; // default: 2x current. range 1.0–3.0, step 0.5
+
 // ─── CABINET KEYS ─────────────────────────────────────────────────────────────
 // DO NOT replace existing keys — they match the physical arcade cabinet wiring.
 const CABINET_KEYS = {
@@ -161,6 +164,7 @@ function initState(lvl) {
     lastSubdivScore: 0, scoreFlash: 0,
     teamBonus: 0,
     particles: [],
+    levelAnnounce: 90,
   };
   assignNeededPieces();
 }
@@ -329,6 +333,10 @@ function handleInput() {
       handleSelect();
     } else if (code === 'P1_2') {
       handleDiscard();
+    } else if (code === 'P1_5') {
+      elemScale = Math.min(3.0, elemScale + 0.5);
+    } else if (code === 'P1_6') {
+      elemScale = Math.max(1.0, elemScale - 0.5);
     }
   }
 }
@@ -393,7 +401,8 @@ function update() {
     if (!p.landed) {
       state.chars.forEach(c => {
         if (c.collapseLevel >= 2 || c.slot !== null) return;
-        if (Math.abs(p.x - c.x) < 25 && Math.abs(p.y - (c.y - 30)) < 25) {
+        const hitR = Math.round(25 * elemScale), hitOY = Math.round(30 * elemScale);
+        if (Math.abs(p.x - c.x) < hitR && Math.abs(p.y - (c.y - hitOY)) < hitR) {
           c.slot = p.type; p.landed = true;
           state.firstPieceLanded = true;
           spawnParticles(c.x, c.y - 30, C.pieces[p.type], 8);
@@ -421,6 +430,7 @@ function update() {
   state.formFill += (state.formFillTarget - state.formFill) * 0.06;
   if (state.scoreFlash > 0) state.scoreFlash = Math.max(0, state.scoreFlash - 0.03);
   if (state.collapseFlash > 0) state.collapseFlash = Math.max(0, state.collapseFlash - 0.04);
+  if (state.levelAnnounce > 0) state.levelAnnounce--;
 }
 
 // ─── DRAW ─────────────────────────────────────────────────────────────────────
@@ -437,6 +447,7 @@ function draw() {
   drawFallingPieces(); drawTransferParticles(); drawParticles();
   drawCharacters(); drawUI();
 
+  drawLevelAnnounce();
   if (state.phase === 'gameover') drawGameOver();
   if (state.phase === 'win') drawWin();
 }
@@ -499,9 +510,9 @@ function drawTimer() {
 }
 
 function drawFallingPieces() {
+  const sz = Math.max(4, Math.round(6 * elemScale));
   state.fallingPieces.forEach(p => {
     if (p.landed) return;
-    const sz = 6;
     ctx.save(); ctx.globalAlpha = 0.85;
     p.shape.forEach((row, ry) => row.forEach((cell, rx) => {
       if (!cell) return;
@@ -546,7 +557,7 @@ function drawCharacters() {
       ctx.lineWidth = 1.5;
       ctx.globalAlpha = 0.4 + Math.sin(state.tick * 0.12) * 0.25;
       ctx.setLineDash([4, 4]);
-      ctx.beginPath(); ctx.arc(c.x, c.y, 32, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(c.x, c.y, Math.round(32 * elemScale), 0, Math.PI * 2); ctx.stroke();
       ctx.setLineDash([]);
       ctx.globalAlpha = collapsed ? 0.15 : 1;
     }
@@ -554,18 +565,19 @@ function drawCharacters() {
     if (c.selected) {
       ctx.strokeStyle = C.accent; ctx.lineWidth = 2;
       ctx.shadowColor = C.accent; ctx.shadowBlur = 12;
-      ctx.beginPath(); ctx.arc(c.x, c.y, 24, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(c.x, c.y, Math.round(24 * elemScale), 0, Math.PI * 2); ctx.stroke();
       ctx.shadowBlur = 0;
     }
 
     if (c.transferTarget) {
       ctx.strokeStyle = C.ok; ctx.lineWidth = 1.5;
       ctx.setLineDash([3, 3]);
-      ctx.beginPath(); ctx.arc(c.x, c.y, 26, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(c.x, c.y, Math.round(26 * elemScale), 0, Math.PI * 2); ctx.stroke();
       ctx.setLineDash([]);
     }
 
-    const r = reduced ? 13 : 16;
+    const r = Math.round((reduced ? 13 : 16) * elemScale);
+    const symFont = Math.round((reduced ? 9 : 11) * elemScale);
     if (reduced) {
       ctx.strokeStyle = '#555'; ctx.lineWidth = 1.5;
       ctx.shadowColor = '#333'; ctx.shadowBlur = 4;
@@ -576,7 +588,7 @@ function drawCharacters() {
         a === 0 ? ctx.moveTo(mx, my) : ctx.lineTo(mx, my);
       }
       ctx.closePath(); ctx.stroke(); ctx.shadowBlur = 0;
-      ctx.fillStyle = '#444'; ctx.font = 'bold 9px Courier New';
+      ctx.fillStyle = '#444'; ctx.font = 'bold ' + symFont + 'px Courier New';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(c.symbol, c.x, c.y);
     } else {
@@ -591,7 +603,7 @@ function drawCharacters() {
       }
       ctx.closePath(); ctx.fill(); ctx.shadowBlur = 0;
       ctx.fillStyle = collapsed ? C.dim : C.bg;
-      ctx.font = 'bold 11px Courier New';
+      ctx.font = 'bold ' + symFont + 'px Courier New';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(c.symbol, c.x, c.y);
     }
@@ -602,50 +614,55 @@ function drawCharacters() {
 }
 
 function drawSlot(c) {
-  const sy = c.y - 52;
+  const sc = elemScale;
+  const sy = c.y - Math.round(52 * sc);
   const reduced = c.collapseLevel === 1;
+  const slotFont = Math.min(14, Math.round(7 * sc)) + 'px Courier New';
+  const bw = Math.round(28 * sc), bh = Math.round(16 * sc);
 
   if (c.slotNeeded !== null) {
     ctx.fillStyle = reduced ? '#2a2a2a' : C.mid;
-    ctx.font = '7px Courier New'; ctx.textAlign = 'center';
-    ctx.fillText(reduced ? '\u00b7\u00b7\u00b7' : 'NEED', c.x, sy - 22);
+    ctx.font = slotFont; ctx.textAlign = 'center';
+    ctx.fillText(reduced ? '\u00b7\u00b7\u00b7' : 'NEED', c.x, sy - Math.round(22 * sc));
     ctx.globalAlpha = reduced ? 0.12 : 0.3;
     ctx.strokeStyle = reduced ? '#444' : C.pieces[c.slotNeeded];
-    ctx.lineWidth = 1; ctx.strokeRect(c.x - 14, sy - 18, 28, 16);
-    drawMiniShape(c.x, sy - 10, c.slotNeeded);
+    ctx.lineWidth = 1;
+    ctx.strokeRect(c.x - bw / 2, sy - Math.round(18 * sc), bw, bh);
+    drawMiniShape(c.x, sy - Math.round(10 * sc), c.slotNeeded, sc);
     ctx.globalAlpha = 1;
   }
 
   if (c.slot !== null && c.slot !== -1) {
     const isOk = c.slot === c.slotNeeded;
-    const hy = sy - 42;
+    const hy = sy - Math.round(42 * sc);
     ctx.fillStyle = reduced ? '#555' : (isOk ? C.ok : C.accent);
-    ctx.font = '7px Courier New'; ctx.textAlign = 'center';
-    ctx.fillText(isOk ? 'OK' : 'HAS', c.x, hy - 4);
+    ctx.font = slotFont; ctx.textAlign = 'center';
+    ctx.fillText(isOk ? 'OK' : 'HAS', c.x, hy - Math.round(4 * sc));
     ctx.strokeStyle = reduced ? '#555' : (isOk ? C.ok : C.accent);
     ctx.lineWidth = 1;
     ctx.shadowColor = reduced ? 'transparent' : (isOk ? C.ok : C.accent);
     ctx.shadowBlur = reduced ? 0 : (isOk ? 8 : 4);
-    ctx.strokeRect(c.x - 14, hy, 28, 16); ctx.shadowBlur = 0;
+    ctx.strokeRect(c.x - bw / 2, hy, bw, bh); ctx.shadowBlur = 0;
     ctx.globalAlpha = reduced ? 0.5 : 1;
-    drawMiniShape(c.x, hy + 8, c.slot);
+    drawMiniShape(c.x, hy + Math.round(8 * sc), c.slot, sc);
     ctx.globalAlpha = 1;
   }
 
   if (c.slot === -1) {
     ctx.fillStyle = C.accent;
     ctx.globalAlpha = 0.5 + Math.sin(state.tick * 0.2) * 0.3;
-    ctx.beginPath(); ctx.arc(c.x, sy - 32, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(c.x, sy - Math.round(32 * sc), Math.round(5 * sc), 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 1;
   }
 
   ctx.fillStyle = reduced ? '#333' : C.mid;
-  ctx.font = '7px Courier New'; ctx.textAlign = 'center';
-  ctx.fillText(c.role, c.x, c.y + 26);
+  ctx.font = slotFont; ctx.textAlign = 'center';
+  ctx.fillText(c.role, c.x, c.y + Math.round(26 * sc));
 }
 
-function drawMiniShape(cx, cy, type) {
-  const s = SHAPES[type % SHAPES.length], sz = 5;
+function drawMiniShape(cx, cy, type, sc) {
+  sc = sc || 1;
+  const s = SHAPES[type % SHAPES.length], sz = Math.max(3, Math.round(5 * sc));
   s.forEach((row, ry) => row.forEach((cell, rx) => {
     if (!cell) return;
     ctx.fillStyle = C.pieces[type];
@@ -679,6 +696,10 @@ function drawUI() {
   ctx.fillStyle = C.dim; ctx.font = '8px Courier New'; ctx.textAlign = 'right';
   ctx.fillText('\u2190 spread \u2192', W - 14, H - 14);
 
+  // Size indicator (B5/B6)
+  ctx.fillStyle = C.dim; ctx.font = '8px Courier New'; ctx.textAlign = 'left';
+  ctx.fillText('SZ ' + elemScale.toFixed(1) + '  B5\u25b2 B6\u25bc', 14, H - 14);
+
   if (state.tick < 420) {
     const alpha = Math.min(1, (420 - state.tick) / 90) * 0.65;
     ctx.save(); ctx.globalAlpha = alpha;
@@ -687,6 +708,30 @@ function drawUI() {
     ctx.fillText('B3: expand  \u00b7  B4: compress  \u00b7  START: restart', W/2, H - 28);
     ctx.restore();
   }
+}
+
+function drawLevelAnnounce() {
+  if (state.levelAnnounce <= 0) return;
+  const alpha = state.levelAnnounce > 60 ? 1 : state.levelAnnounce / 60;
+  ctx.save();
+  ctx.globalAlpha = alpha * 0.92;
+  ctx.fillStyle = 'rgba(10,10,10,0.88)';
+  ctx.fillRect(W / 2 - 220, H / 2 - 70, 440, 140);
+  ctx.strokeStyle = C.accent; ctx.lineWidth = 1;
+  ctx.strokeRect(W / 2 - 220, H / 2 - 70, 440, 140);
+
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = C.accent;
+  ctx.font = 'bold 56px Courier New';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.shadowColor = C.accent; ctx.shadowBlur = 24;
+  ctx.fillText('LEVEL ' + state.level, W / 2, H / 2 - 18);
+  ctx.shadowBlur = 0;
+
+  ctx.fillStyle = C.mid;
+  ctx.font = '18px Courier New';
+  ctx.fillText(state.levelLabel, W / 2, H / 2 + 28);
+  ctx.restore();
 }
 
 function drawGameOver() {
