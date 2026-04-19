@@ -279,10 +279,13 @@ function checkSubdivComplete() {
   state.lastSubdivScore = points; state.scoreFlash = 1;
 
   spawnParticles(W / 2, H * 0.35, C.ok, 40);
+  audioOnSubdivComplete();
 
   if (state.currentSubdiv === state.form.length - 1) {
     applyLevelEndBonus();
-    state.phase = isPivot() ? 'win' : 'gameover';
+    const endPhase = isPivot() ? 'win' : 'gameover';
+    state.phase = endPhase;
+    if (endPhase === 'win') audioOnWin(); else audioOnGameOver();
   } else {
     state.currentSubdiv++;
     state.firstPieceLanded = false;
@@ -303,6 +306,7 @@ function spawnParticles(x, y, color, n) {
 
 function triggerCollapse() {
   state.collapseFlash = 1;
+  audioOnCollapse();
   spawnParticles(W / 2, H * 0.3, C.danger, 25);
   state.form[state.currentSubdiv].failed = true;
 
@@ -312,7 +316,7 @@ function triggerCollapse() {
   if (worst) { worst.collapseLevel++; worst.slot = null; }
 
   if (state.chars.filter(c => c.collapseLevel < 2).length < 1) {
-    applyLevelEndBonus(); state.phase = 'gameover'; return;
+    applyLevelEndBonus(); state.phase = 'gameover'; audioOnGameOver(); return;
   }
 
   if (state.currentSubdiv < state.form.length - 1) {
@@ -325,7 +329,9 @@ function triggerCollapse() {
     assignNeededPieces();
   } else {
     applyLevelEndBonus();
-    state.phase = isPivot() ? 'win' : 'gameover';
+    const endPhase2 = isPivot() ? 'win' : 'gameover';
+    state.phase = endPhase2;
+    if (endPhase2 === 'win') audioOnWin(); else audioOnGameOver();
   }
 }
 
@@ -440,6 +446,7 @@ function handleSelect() {
     const from = state.chars[state.transferFrom];
     if (cur.slot === null && from.slot !== null && from.slot !== -1 && from.slot === cur.slotNeeded)
       initiateTransfer(state.transferFrom, cur.id);
+      audioOnTransfer();
     cancelTransfer();
   }
 }
@@ -546,7 +553,7 @@ function update() {
         state.collapseFlash = 1;
         if (state.transferFrom === c.id) cancelTransfer();
         if (state.chars.filter(x => x.collapseLevel < 2).length < 1) {
-          applyLevelEndBonus(); state.phase = 'gameover';
+          applyLevelEndBonus(); state.phase = 'gameover'; audioOnGameOver();
         }
       }
     }
@@ -1228,3 +1235,168 @@ canvas.addEventListener('wheel', e => {
 function loop() { update(); draw(); requestAnimationFrame(loop); }
 initState(0);
 loop();
+
+// ─── AUDIO SYSTEM ─────────────────────────────────────────────────────────────
+const ARP_HZ   = [146.83, 174.61, 220.00, 261.63]; // D3 F3 A3 C4
+const BEAT_S   = 60 / 124;                          // 0.484s @ 124 BPM
+
+let audioCtx   = null;
+let A          = null;  // audio nodes bundle
+let arpIdx     = 0;
+let nextBeat   = 0;
+
+function initAudio() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  // Reverb impulse (white noise × exponential decay)
+  const reverb  = audioCtx.createConvolver();
+  const rlen    = Math.floor(audioCtx.sampleRate * 1.2);
+  const rbuf    = audioCtx.createBuffer(2, rlen, audioCtx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = rbuf.getChannelData(ch);
+    for (let i = 0; i < rlen; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / rlen, 2.5);
+  }
+  reverb.buffer = rbuf;
+
+  const masterGain = audioCtx.createGain(); masterGain.gain.value = 0.001;
+  const reverbGain = audioCtx.createGain(); reverbGain.gain.value = 0.28;
+  reverb.connect(reverbGain); reverbGain.connect(masterGain);
+  masterGain.connect(audioCtx.destination);
+
+  // Bass — sine, D1
+  const bassOsc = audioCtx.createOscillator();
+  bassOsc.type = 'sine'; bassOsc.frequency.value = 36.71;
+  const bassGain = audioCtx.createGain(); bassGain.gain.value = 0.001;
+  bassOsc.connect(bassGain); bassGain.connect(masterGain); bassOsc.start();
+
+  // Arp — sawtooth + lowpass, D3
+  const arpOsc = audioCtx.createOscillator();
+  arpOsc.type = 'sawtooth'; arpOsc.frequency.value = ARP_HZ[0];
+  const arpFilter = audioCtx.createBiquadFilter();
+  arpFilter.type = 'lowpass'; arpFilter.frequency.value = 700; arpFilter.Q.value = 1.0;
+  const arpGain = audioCtx.createGain(); arpGain.gain.value = 0.001;
+  arpOsc.connect(arpFilter); arpFilter.connect(arpGain);
+  arpGain.connect(reverb); arpGain.connect(masterGain); arpOsc.start();
+
+  // Pad — sine, D2
+  const padOsc = audioCtx.createOscillator();
+  padOsc.type = 'sine'; padOsc.frequency.value = 73.42; padOsc.detune.value = 7;
+  const padFilter = audioCtx.createBiquadFilter();
+  padFilter.type = 'lowpass'; padFilter.frequency.value = 400;
+  const padGain = audioCtx.createGain(); padGain.gain.value = 0.001;
+  padOsc.connect(padFilter); padFilter.connect(padGain);
+  padGain.connect(reverb); padOsc.start();
+
+  A = { masterGain, bassOsc, bassGain, arpOsc, arpFilter, arpGain, padOsc, padGain, beatActive: false, arpSpeed: 1.0, ending: false };
+  nextBeat = audioCtx.currentTime;
+
+  setInterval(scheduleBeat, 50);
+  scheduleArp();
+  setInterval(updateAudio, 100);
+}
+
+function scheduleBeat() {
+  if (!A || !audioCtx) return;
+  const now = audioCtx.currentTime;
+  while (nextBeat < now + 0.15) {
+    if (A.beatActive && !A.ending) {
+      const on = Math.max(nextBeat, now);
+      A.bassGain.gain.setTargetAtTime(0.45, on, 0.01);
+      A.bassGain.gain.setTargetAtTime(0.001, on + BEAT_S * 0.5, 0.05);
+    } else {
+      A.bassGain.gain.setTargetAtTime(0.001, now, 0.1);
+    }
+    nextBeat += BEAT_S;
+  }
+}
+
+function scheduleArp() {
+  if (!A || !audioCtx) return;
+  if (!A.ending) {
+    A.arpOsc.frequency.setTargetAtTime(ARP_HZ[arpIdx], audioCtx.currentTime, 0.02);
+    arpIdx = (arpIdx + 1) % ARP_HZ.length;
+  }
+  setTimeout(scheduleArp, (BEAT_S / 2 / (A ? A.arpSpeed : 1)) * 1000);
+}
+
+function updateAudio() {
+  if (!A || !audioCtx || !state || A.ending) return;
+  const { phase, subdivTimer, subdivTimerMax, chars, firstPieceLanded } = state;
+  const now = audioCtx.currentTime, ramp = 0.3;
+
+  let targetMaster = 1.0;
+  if (phase === 'waiting_for_movement' || phase === 'waiting_for_navigation') targetMaster = 0.04;
+  else if (phase === 'waiting_for_action') targetMaster = 0.4;
+  else if (phase === 'win' || phase === 'gameover') return;
+  A.masterGain.gain.linearRampToValueAtTime(targetMaster, now + ramp);
+  A.beatActive = firstPieceLanded && phase === 'playing';
+
+  const ratio = subdivTimerMax > 0 ? subdivTimer / subdivTimerMax : 1;
+  A.bassOsc.frequency.linearRampToValueAtTime(ratio > 0.6 ? 36.71 : ratio > 0.3 ? 41.20 : 46.25, now + ramp);
+  A.arpFilter.frequency.linearRampToValueAtTime(ratio > 0.6 ? 700 : ratio > 0.3 ? 1200 : 2200, now + ramp);
+  A.arpOsc.detune.linearRampToValueAtTime(ratio < 0.3 ? 100 : 0, now + ramp);
+  A.arpSpeed = ratio > 0.6 ? 1.0 : 1.5;
+
+  const h = Math.min(Math.max(chars.filter(c => c.collapseLevel === 0).length, 1), 4) - 1;
+  A.padGain.gain.linearRampToValueAtTime([0.0, 0.08, 0.3, 0.6][h], now + ramp);
+  A.arpGain.gain.linearRampToValueAtTime([0.15, 0.28, 0.5, 0.5][h], now + ramp);
+}
+
+function audioOnTransfer() {
+  if (!A || !audioCtx) return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator(), g = audioCtx.createGain();
+  osc.type = 'sine'; osc.frequency.value = 880;
+  g.gain.setValueAtTime(0.25, now); g.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+  osc.connect(g); g.connect(A.masterGain); osc.start(now); osc.stop(now + 0.09);
+}
+
+function audioOnSubdivComplete() {
+  if (!A || !audioCtx) return;
+  const now = audioCtx.currentTime;
+  [261.63, 329.63, 392.00].forEach((freq, i) => {
+    const t = now + i * 0.1;
+    const osc = audioCtx.createOscillator(), g = audioCtx.createGain();
+    osc.type = 'sine'; osc.frequency.value = freq;
+    g.gain.setValueAtTime(0.22, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+    osc.connect(g); g.connect(A.masterGain); osc.start(t); osc.stop(t + 0.16);
+  });
+}
+
+function audioOnCollapse() {
+  if (!A || !audioCtx) return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator(), g = audioCtx.createGain();
+  osc.type = 'sine'; osc.frequency.value = 55;
+  g.gain.setValueAtTime(0.55, now); g.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+  osc.connect(g); g.connect(audioCtx.destination); osc.start(now); osc.stop(now + 0.21);
+}
+
+function audioOnWin() {
+  if (!A || !audioCtx) return;
+  A.ending = true;
+  const now = audioCtx.currentTime;
+  A.arpOsc.frequency.linearRampToValueAtTime(146.83, now + 0.5);
+  A.bassOsc.frequency.linearRampToValueAtTime(36.71, now + 0.5);
+  A.masterGain.gain.linearRampToValueAtTime(0.7, now + 0.5);
+  A.masterGain.gain.linearRampToValueAtTime(0.001, now + 2.2);
+  setTimeout(() => { if (A) A.ending = false; }, 2400);
+}
+
+function audioOnGameOver() {
+  if (!A || !audioCtx) return;
+  A.ending = true;
+  const now = audioCtx.currentTime;
+  A.bassOsc.detune.linearRampToValueAtTime(-120, now + 2.0);
+  A.arpOsc.detune.linearRampToValueAtTime(-120, now + 2.0);
+  A.padOsc.detune.linearRampToValueAtTime(-120, now + 2.0);
+  A.masterGain.gain.linearRampToValueAtTime(0.001, now + 2.0);
+  setTimeout(() => {
+    if (!A) return;
+    A.ending = false;
+    A.bassOsc.detune.value = 0; A.arpOsc.detune.value = 0; A.padOsc.detune.value = 7;
+  }, 2400);
+}
+
+window.addEventListener('keydown', initAudio, { once: true });
