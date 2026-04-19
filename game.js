@@ -109,11 +109,15 @@ function assignNeededPieces() {
 }
 
 const LEVELS = [
-  { subdivs: 3, timerSecs: 25, pieceInterval: 160, fallSpeed: [0.7, 1.1], label: 'WARMUP'   },
-  { subdivs: 4, timerSecs: 22, pieceInterval: 140, fallSpeed: [0.9, 1.3], label: 'FORMING'  },
-  { subdivs: 4, timerSecs: 18, pieceInterval: 110, fallSpeed: [1.1, 1.6], label: 'PRESSURE' },
-  { subdivs: 5, timerSecs: 16, pieceInterval:  90, fallSpeed: [1.3, 1.9], label: 'CRITICAL' },
-  { subdivs: 5, timerSecs: 14, pieceInterval:  75, fallSpeed: [1.5, 2.2], label: 'COLLAPSE' },
+  // Base 1 — standard
+  { subdivs: 3, timerSecs: 25, pieceInterval: 160, fallSpeed: [0.7, 1.1], label: 'WARMUP',    edgeBias: false, burnoutInterval: 0 },
+  { subdivs: 4, timerSecs: 22, pieceInterval: 140, fallSpeed: [0.9, 1.3], label: 'FORMING',   edgeBias: false, burnoutInterval: 0 },
+  // Base 2 — edge pressure
+  { subdivs: 4, timerSecs: 20, pieceInterval: 115, fallSpeed: [1.1, 1.6], label: 'SCATTERED', edgeBias: true,  burnoutInterval: 0 },
+  { subdivs: 5, timerSecs: 17, pieceInterval:  90, fallSpeed: [1.3, 1.9], label: 'STRETCH',   edgeBias: true,  burnoutInterval: 0 },
+  // Base 3 — burnout
+  { subdivs: 5, timerSecs: 16, pieceInterval:  85, fallSpeed: [1.4, 2.0], label: 'OVERLOAD',  edgeBias: false, burnoutInterval: 420 },
+  { subdivs: 6, timerSecs: 13, pieceInterval:  70, fallSpeed: [1.6, 2.3], label: 'COLLAPSE',  edgeBias: true,  burnoutInterval: 280 },
 ];
 const FPS = 60;
 let currentLevel = 0;
@@ -143,7 +147,7 @@ function initState(lvl) {
       bobPhase: i * Math.PI * 0.5,
       slot: null, slotNeeded: null,
       selected: false, transferTarget: false, transferAnim: 0,
-      collapseLevel: 0,
+      collapseLevel: 0, burnout: 0,
     })),
 
     cursor: 0,
@@ -152,6 +156,8 @@ function initState(lvl) {
     nextPieceTimer: cfg.pieceInterval,
     pieceInterval: cfg.pieceInterval,
     fallSpeed: cfg.fallSpeed,
+    burnoutInterval: cfg.burnoutInterval,
+    nextBurnoutTimer: cfg.burnoutInterval || 0,
     transferFrom: null, transferParticles: [],
     form: generateForm(cfg.subdivs),
     currentSubdiv: 0,
@@ -186,22 +192,39 @@ function generateForm(numSubdivs) {
 
 // ─── PHYSICS / GAME LOGIC ─────────────────────────────────────────────────────
 function spawnPiece() {
+  const cfg = LEVELS[Math.min(currentLevel, LEVELS.length - 1)];
   const needy = state.chars.filter(c => c.collapseLevel < 2 && c.slot === null && c.slotNeeded !== null);
   let type, x;
   if (needy.length > 0) {
-    const target = needy[Math.floor(Math.random() * needy.length)];
+    let target;
+    if (cfg.edgeBias && Math.random() < 0.7) {
+      const sorted = [...needy].sort((a, b) => Math.abs(b.x - W / 2) - Math.abs(a.x - W / 2));
+      target = sorted[0];
+    } else {
+      target = needy[Math.floor(Math.random() * needy.length)];
+    }
     type = target.slotNeeded;
     x = target.x + (Math.random() - 0.5) * 60;
   } else {
     type = Math.floor(Math.random() * 4);
-    x = 80 + Math.random() * (W - 160);
+    if (cfg.edgeBias) {
+      x = Math.random() < 0.5 ? 40 + Math.random() * 120 : W - 160 + Math.random() * 120;
+    } else {
+      x = 80 + Math.random() * (W - 160);
+    }
   }
   state.fallingPieces.push({
     x, y: -20,
     vy: state.fallSpeed[0] + Math.random() * (state.fallSpeed[1] - state.fallSpeed[0]),
     type, shape: SHAPES[type % SHAPES.length],
-    landed: false,
+    landed: false, isBurnout: false,
   });
+}
+
+function spawnBurnout() {
+  const cfg = LEVELS[Math.min(currentLevel, LEVELS.length - 1)];
+  const vy = cfg.fallSpeed[1] * 1.8;
+  state.fallingPieces.push({ x: 80 + Math.random() * (W - 160), y: -20, vy, type: -1, shape: null, landed: false, isBurnout: true });
 }
 
 function initiateTransfer(fromId, toId) {
@@ -424,6 +447,7 @@ function handleSelect() {
 function handleDiscard() {
   const cur = state.chars[state.cursor];
   if (cur.collapseLevel >= 2) return;
+  if (cur.burnout > 0) { cur.burnout = 0; return; }
   if (cur.slot !== null && cur.slot !== -1) {
     cur.slot = null;
     if (state.transferFrom === cur.id) cancelTransfer();
@@ -508,12 +532,42 @@ function update() {
   state.nextPieceTimer--;
   if (state.nextPieceTimer <= 0) { spawnPiece(); state.nextPieceTimer = state.pieceInterval; }
 
+  if (state.burnoutInterval > 0) {
+    state.nextBurnoutTimer--;
+    if (state.nextBurnoutTimer <= 0) { spawnBurnout(); state.nextBurnoutTimer = state.burnoutInterval; }
+  }
+
+  state.chars.forEach(c => {
+    if (c.burnout > 0) {
+      c.burnout--;
+      if (c.burnout === 0) {
+        c.collapseLevel = Math.min(2, c.collapseLevel + 1);
+        c.slot = null;
+        state.collapseFlash = 1;
+        if (state.transferFrom === c.id) cancelTransfer();
+        if (state.chars.filter(x => x.collapseLevel < 2).length < 1) {
+          applyLevelEndBonus(); state.phase = 'gameover';
+        }
+      }
+    }
+  });
+
   state.fallingPieces.forEach(p => {
     p.y += p.vy;
     if (!p.landed) {
+      const hitR = Math.round(25 * elemScale), hitOY = Math.round(30 * elemScale);
+      if (p.isBurnout) {
+        state.chars.forEach(c => {
+          if (c.collapseLevel >= 2 || c.burnout > 0) return;
+          if (Math.abs(p.x - c.x) < hitR && Math.abs(p.y - (c.y - hitOY)) < hitR) {
+            c.burnout = 240; p.landed = true;
+            spawnParticles(c.x, c.y - 30, C.danger, 10);
+          }
+        });
+        return;
+      }
       state.chars.forEach(c => {
         if (c.collapseLevel >= 2 || c.slot !== null) return;
-        const hitR = Math.round(25 * elemScale), hitOY = Math.round(30 * elemScale);
         if (Math.abs(p.x - c.x) < hitR && Math.abs(p.y - (c.y - hitOY)) < hitR) {
           c.slot = p.type; p.landed = true;
           state.firstPieceLanded = true;
@@ -661,12 +715,20 @@ function drawFallingPieces() {
   state.fallingPieces.forEach(p => {
     if (p.landed) return;
     ctx.save(); ctx.globalAlpha = 0.85;
-    p.shape.forEach((row, ry) => row.forEach((cell, rx) => {
-      if (!cell) return;
-      ctx.fillStyle = C.pieces[p.type];
-      ctx.fillRect(p.x + rx * sz - sz, p.y + ry * sz - sz, sz - 1, sz - 1);
-    }));
-    ctx.shadowColor = C.pieces[p.type]; ctx.shadowBlur = 6;
+    if (p.isBurnout) {
+      ctx.fillStyle = C.danger;
+      ctx.shadowColor = C.danger; ctx.shadowBlur = 14;
+      ctx.font = 'bold ' + Math.round(sz * 4) + 'px Courier New';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('\u2620', p.x, p.y);
+    } else {
+      p.shape.forEach((row, ry) => row.forEach((cell, rx) => {
+        if (!cell) return;
+        ctx.fillStyle = C.pieces[p.type];
+        ctx.fillRect(p.x + rx * sz - sz, p.y + ry * sz - sz, sz - 1, sz - 1);
+      }));
+      ctx.shadowColor = C.pieces[p.type]; ctx.shadowBlur = 6;
+    }
     ctx.restore();
   });
 }
@@ -763,6 +825,25 @@ function drawCharacters(skipSlots = false) {
     }
 
     if (!collapsed && !skipSlots) drawSlot(c);
+
+    if (c.burnout > 0 && !collapsed) {
+      const ratio = c.burnout / 240;
+      const flash = (state.tick % 20) < 10 ? 1 : 0.4;
+      const sc = elemScale;
+      ctx.globalAlpha = flash;
+      ctx.fillStyle = C.danger;
+      ctx.font = 'bold ' + Math.round(13 * sc) + 'px Courier New';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.shadowColor = C.danger; ctx.shadowBlur = 8;
+      ctx.fillText('\u2620', c.x + Math.round(22 * sc), c.y - Math.round(62 * sc));
+      ctx.shadowBlur = 0;
+      const bw = Math.round(38 * sc), bh = 3, bx = c.x - bw / 2, by = c.y - Math.round(72 * sc);
+      ctx.globalAlpha = 0.4; ctx.fillStyle = '#333';
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.globalAlpha = flash; ctx.fillStyle = C.danger;
+      ctx.fillRect(bx, by, bw * ratio, bh);
+    }
+
     ctx.restore();
   });
 }
