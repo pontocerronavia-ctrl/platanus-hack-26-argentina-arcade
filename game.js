@@ -1269,9 +1269,12 @@ function toggleAudio() {
     audioEnabled = !audioEnabled;
   }
   if (audioCtx.state !== 'running') audioCtx.resume().catch(() => {});
-  if (A) A.masterGain.gain.linearRampToValueAtTime(
-    audioEnabled ? 1.0 : 0.001, audioCtx.currentTime + 0.2
-  );
+  if (A) {
+    const g = A.masterGain.gain, now = audioCtx.currentTime;
+    g.cancelScheduledValues(now);
+    g.setValueAtTime(g.value, now);
+    g.linearRampToValueAtTime(audioEnabled ? 1.0 : 0.001, now + 0.2);
+  }
 }
 
 function buildAudioGraph() {
