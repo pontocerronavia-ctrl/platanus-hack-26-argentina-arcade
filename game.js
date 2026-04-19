@@ -658,6 +658,16 @@ function draw() {
   drawLevelAnnounce();
   if (state.phase === 'gameover') drawGameOver();
   if (state.phase === 'win') drawWin();
+  drawSpeakerButton();
+}
+
+function drawSpeakerButton() {
+  ctx.save();
+  ctx.globalAlpha = audioEnabled ? 0.7 : 0.35;
+  ctx.font = '18px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(audioEnabled ? '\uD83D\uDD0A' : '\uD83D\uDD07', SPEAKER_X, SPEAKER_Y);
+  ctx.restore();
 }
 
 function drawLane() {
@@ -1241,18 +1251,27 @@ const ARP_HZ   = [146.83, 174.61, 220.00, 261.63]; // D3 F3 A3 C4
 const BEAT_S   = 60 / 124;                          // 0.484s @ 124 BPM
 
 let audioCtx   = null;
-let A          = null;  // audio nodes bundle
+let A          = null;
 let arpIdx     = 0;
 let nextBeat   = 0;
+let audioEnabled = false;
 
-function initAudio() {
+const SPEAKER_X = 28, SPEAKER_Y = H - 22, SPEAKER_R = 18;
+
+function toggleAudio() {
   if (!audioCtx) {
     try {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     } catch(e) { return; }
     buildAudioGraph();
+    audioEnabled = true;
+  } else {
+    audioEnabled = !audioEnabled;
   }
   if (audioCtx.state !== 'running') audioCtx.resume().catch(() => {});
+  if (A) A.masterGain.gain.linearRampToValueAtTime(
+    audioEnabled ? 1.0 : 0.001, audioCtx.currentTime + 0.2
+  );
 }
 
 function buildAudioGraph() {
@@ -1329,8 +1348,8 @@ function scheduleArp() {
 }
 
 function updateAudio() {
-  if (!A || !audioCtx || !state || A.ending) return;
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+  if (!A || !audioCtx || !state || A.ending || !audioEnabled) return;
+  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
   const { phase, subdivTimer, subdivTimerMax, chars, firstPieceLanded } = state;
   const now = audioCtx.currentTime, ramp = 0.3;
 
@@ -1408,6 +1427,10 @@ function audioOnGameOver() {
   }, 2400);
 }
 
-['keydown', 'pointerdown', 'touchstart'].forEach(evt =>
-  window.addEventListener(evt, initAudio)
-);
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = W / rect.width, scaleY = H / rect.height;
+  const x = (e.clientX - rect.left) * scaleX;
+  const y = (e.clientY - rect.top)  * scaleY;
+  if (Math.hypot(x - SPEAKER_X, y - SPEAKER_Y) < SPEAKER_R + 8) toggleAudio();
+});
