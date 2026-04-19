@@ -131,7 +131,7 @@ function initState(lvl) {
   const timerMax = cfg.timerSecs * FPS;
 
   state = {
-    phase: 'playing',
+    phase: lvl === 0 ? 'waiting_for_movement' : 'playing',
     tick: 0,
     level: lvl + 1,
     levelLabel: cfg.label,
@@ -164,7 +164,15 @@ function initState(lvl) {
     lastSubdivScore: 0, scoreFlash: 0,
     teamBonus: 0,
     particles: [],
-    levelAnnounce: 90,
+    levelAnnounce: lvl === 0 ? 0 : 90,
+    transitionTimer: 0,
+    onboardExpanded: false, onboardCompressed: false,
+    onboardNavLeft: false, onboardNavRight: false,
+    skipAll: false,
+    onboardActionDone: false,
+    onboardAimed: false, onboardActionTaken: false, onboardActionUsed: null,
+    onboardAimFade: -1,
+    onboardWrongCharId: -1,
   };
   assignNeededPieces();
 }
@@ -311,10 +319,60 @@ function handleInput() {
       if (code === 'START1' || code === 'P1_1') {
         if (state.phase === 'win') {
           const carryScore = state.score;
+          const carrySkip = state.skipAll;
           initState(currentLevel + 1);
           state.score = carryScore;
+          state.skipAll = carrySkip;
         } else {
           currentLevel = 0; initState(0);
+        }
+      }
+      continue;
+    }
+    if (state.phase === 'waiting_for_movement') {
+      if (state.transitionTimer === 0) {
+        if (code === 'P1_U') { state.transitionTimer = 20; }
+        else if (code === 'P1_D') { state.skipAll = true; state.transitionTimer = 20; }
+        else if (code === 'P1_3') { state.laneTargetSep = Math.min(1.6, state.laneTargetSep + 0.15); state.onboardExpanded = true; }
+        else if (code === 'P1_4') { state.laneTargetSep = Math.max(0.4, state.laneTargetSep - 0.15); state.onboardCompressed = true; }
+        if (state.onboardExpanded && state.onboardCompressed) state.transitionTimer = 60;
+      }
+      continue;
+    }
+    if (state.phase === 'waiting_for_navigation') {
+      if (state.transitionTimer > 0) { continue; }
+      if (code === 'P1_U') { state.transitionTimer = 20; continue; }
+      if (code === 'P1_D') { state.skipAll = true; state.transitionTimer = 20; continue; }
+      if (code === 'P1_L') { state.cursor = (state.cursor - 1 + 4) % 4; state.onboardNavLeft = true; }
+      if (code === 'P1_R') { state.cursor = (state.cursor + 1) % 4; state.onboardNavRight = true; }
+      if (state.onboardNavLeft && state.onboardNavRight) state.transitionTimer = 40;
+      continue;
+    }
+    if (state.phase === 'waiting_for_action') {
+      if (state.transitionTimer > 0) { continue; }
+      if (code === 'P1_U') { state.onboardActionDone = true; state.transitionTimer = 20; continue; }
+      if (code === 'P1_D') { state.onboardActionDone = true; state.skipAll = true; state.transitionTimer = 20; continue; }
+      if (code === 'P1_3') { state.laneTargetSep = Math.min(1.6, state.laneTargetSep + 0.15); continue; }
+      if (code === 'P1_4') { state.laneTargetSep = Math.max(0.4, state.laneTargetSep - 0.15); continue; }
+      if (code === 'P1_L') { state.cursor = (state.cursor - 1 + 4) % 4; continue; }
+      if (code === 'P1_R') { state.cursor = (state.cursor + 1) % 4; continue; }
+      const onWrong = state.cursor === state.onboardWrongCharId;
+      const holding = state.transferFrom === state.onboardWrongCharId;
+      if (onWrong || holding) {
+        if (code === 'P1_1') {
+          const wrongChar = state.chars[state.onboardWrongCharId];
+          const cursorChar = state.chars[state.cursor];
+          const wasOnValidTarget = holding && wrongChar && cursorChar &&
+            cursorChar.id !== wrongChar.id && cursorChar.slot === null &&
+            cursorChar.collapseLevel === 0 && cursorChar.slotNeeded === wrongChar.slot;
+          handleSelect();
+          if (holding && wasOnValidTarget) {
+            state.onboardActionTaken = true; state.onboardActionUsed = 'P1_1'; state.onboardActionDone = true; state.transitionTimer = 60;
+          }
+        } else if (code === 'P1_2') {
+          const wc = state.chars[state.onboardWrongCharId];
+          if (holding) { cancelTransfer(); wc.slot = null; } else { handleDiscard(); }
+          state.onboardActionTaken = true; state.onboardActionUsed = 'P1_2'; state.onboardActionDone = true; state.transitionTimer = 60;
         }
       }
       continue;
@@ -350,7 +408,7 @@ function handleSelect() {
       state.transferFrom = cur.id;
       state.chars.forEach(c => {
         c.selected = c.id === cur.id;
-        c.transferTarget = c.id !== cur.id && c.collapseLevel === 0 && c.slot === null;
+        c.transferTarget = c.id !== cur.id && c.collapseLevel === 0 && c.slot === null && c.slotNeeded === cur.slot;
       });
     }
   } else if (cur.id === state.transferFrom) {
@@ -380,6 +438,60 @@ function cancelTransfer() {
 // ─── UPDATE ───────────────────────────────────────────────────────────────────
 function update() {
   handleInput();
+
+  if (state.phase === 'waiting_for_movement') {
+    state.tick++;
+    state.laneSeparation += (state.laneTargetSep - state.laneSeparation) * 0.05;
+    state.chars.forEach(c => {
+      c.targetX = getLaneX(c.id, state.laneSeparation);
+      c.x += (c.targetX - c.x) * 0.08;
+      c.bobPhase += 0.06;
+      c.y = H * 0.62 + Math.sin(c.bobPhase) * 4;
+    });
+    if (state.transitionTimer > 0 && --state.transitionTimer === 0) {
+      state.phase = state.skipAll ? 'playing' : 'waiting_for_navigation';
+      if (state.skipAll) state.levelAnnounce = 90;
+      else state.cursor = 1;
+    }
+    return;
+  }
+
+  if (state.phase === 'waiting_for_navigation') {
+    state.tick++;
+    state.laneSeparation += (state.laneTargetSep - state.laneSeparation) * 0.05;
+    state.chars.forEach(c => {
+      c.targetX = getLaneX(c.id, state.laneSeparation);
+      c.x += (c.targetX - c.x) * 0.08;
+      c.bobPhase += 0.06;
+      c.y = H * 0.62 + Math.sin(c.bobPhase) * 4;
+    });
+    if (state.transitionTimer > 0 && --state.transitionTimer === 0) {
+      state.phase = 'playing';
+      state.levelAnnounce = 90;
+    }
+    return;
+  }
+
+  if (state.phase === 'waiting_for_action') {
+    state.tick++;
+    state.laneSeparation += (state.laneTargetSep - state.laneSeparation) * 0.05;
+    state.chars.forEach(c => {
+      c.targetX = getLaneX(c.id, state.laneSeparation);
+      c.x += (c.targetX - c.x) * 0.08;
+      c.bobPhase += 0.06;
+      c.y = H * 0.62 + Math.sin(c.bobPhase) * 4;
+      if (c.transferAnim > 0) c.transferAnim = Math.max(0, c.transferAnim - 0.05);
+    });
+    state.transferParticles.forEach(p => { p.t += p.speed; });
+    state.transferParticles = state.transferParticles.filter(p => p.t < 1);
+    state.particles.forEach(p => { p.x += p.vx; p.y += p.vy; p.vy += 0.05; p.life -= p.decay; });
+    state.particles = state.particles.filter(p => p.life > 0);
+    if (state.scoreFlash > 0) state.scoreFlash = Math.max(0, state.scoreFlash - 0.03);
+    if (state.onboardAimFade > 0) state.onboardAimFade--;
+    if (state.transitionTimer > 0 && --state.transitionTimer === 0) state.phase = 'playing';
+    return;
+  }
+
   if (state.phase !== 'playing') return;
   state.tick++;
 
@@ -407,6 +519,16 @@ function update() {
           state.firstPieceLanded = true;
           spawnParticles(c.x, c.y - 30, C.pieces[p.type], 8);
           checkSubdivComplete();
+          if (currentLevel === 0 && !state.onboardActionDone && !state.skipAll && state.phase === 'playing'
+              && c.slot !== null && c.slot !== -1 && c.slot !== c.slotNeeded && c.collapseLevel === 0) {
+            const hasTarget = state.chars.some(o =>
+              o.id !== c.id && o.slot === null && o.collapseLevel === 0 && o.slotNeeded === c.slot);
+            if (hasTarget) {
+              state.phase = 'waiting_for_action';
+              state.onboardWrongCharId = c.id;
+              state.cursor = c.id;
+            }
+          }
         }
       });
     }
@@ -437,6 +559,31 @@ function update() {
 function draw() {
   ctx.fillStyle = C.bg;
   ctx.fillRect(0, 0, W, H);
+
+  if (state.phase === 'waiting_for_movement') {
+    drawLane();
+    drawCharacters(true);
+    drawOnboarding();
+    return;
+  }
+
+  if (state.phase === 'waiting_for_navigation') {
+    drawLane();
+    drawCharacters(true);
+    drawWaitingNavigation();
+    return;
+  }
+
+  if (state.phase === 'waiting_for_action') {
+    drawLane();
+    ctx.save(); ctx.globalAlpha = 0.3;
+    drawForm(); drawTimer(); drawUI();
+    ctx.restore();
+    drawFallingPieces(); drawTransferParticles(); drawParticles();
+    drawCharacters();
+    drawWaitingAction();
+    return;
+  }
 
   if (state.collapseFlash > 0) {
     ctx.fillStyle = `rgba(232,71,71,${state.collapseFlash * 0.15})`;
@@ -544,7 +691,7 @@ function drawParticles() {
   });
 }
 
-function drawCharacters() {
+function drawCharacters(skipSlots = false) {
   state.chars.forEach((c, i) => {
     const collapsed = c.collapseLevel >= 2;
     const reduced   = c.collapseLevel === 1;
@@ -559,6 +706,13 @@ function drawCharacters() {
       ctx.setLineDash([4, 4]);
       ctx.beginPath(); ctx.arc(c.x, c.y, Math.round(32 * elemScale), 0, Math.PI * 2); ctx.stroke();
       ctx.setLineDash([]);
+      ctx.globalAlpha = 0.4 + Math.sin(state.tick * 0.12) * 0.25;
+      ctx.fillStyle = C.bright;
+      ctx.font = 'bold ' + Math.round(21 * elemScale) + 'px Courier New';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.shadowColor = '#000000'; ctx.shadowBlur = 10;
+      ctx.fillText(c.role, c.x, c.y + Math.round(60 * elemScale));
+      ctx.shadowBlur = 0;
       ctx.globalAlpha = collapsed ? 0.15 : 1;
     }
 
@@ -608,9 +762,175 @@ function drawCharacters() {
       ctx.fillText(c.symbol, c.x, c.y);
     }
 
-    if (!collapsed) drawSlot(c);
+    if (!collapsed && !skipSlots) drawSlot(c);
     ctx.restore();
   });
+}
+
+function drawOnboarding() {
+  const bothDone = state.onboardExpanded && state.onboardCompressed;
+  const fadeAlpha = state.transitionTimer === 0 ? 1 : Math.max(0, (state.transitionTimer - 30) / 30);
+  const pulse = 0.5 + Math.sin(state.tick * 0.06) * 0.4;
+
+  ctx.save();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+  // Central text
+  ctx.globalAlpha = fadeAlpha * (bothDone ? 0.6 : pulse);
+  ctx.fillStyle = bothDone ? C.ok : C.accent;
+  ctx.font = 'bold 32px Courier New';
+  ctx.fillText('MOVE YOUR TEAM', W / 2, H * 0.38);
+
+  function drawIndicator(x, y, label, arrowDir, done) {
+    const r = 22;
+    const color = done ? C.ok : C.accent;
+    const alpha = done ? 0.6 : pulse;
+    ctx.globalAlpha = fadeAlpha * alpha;
+    ctx.fillStyle = 'rgba(10,10,10,0.6)';
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.font = 'bold 18px Courier New';
+    ctx.fillText(label, x, y);
+    const ax = arrowDir > 0 ? x + r : x - r;
+    const bx = ax + arrowDir * 16;
+    ctx.strokeStyle = color;
+    ctx.beginPath(); ctx.moveTo(ax, y); ctx.lineTo(bx, y); ctx.stroke();
+    const hs = 5;
+    ctx.beginPath();
+    ctx.moveTo(bx, y); ctx.lineTo(bx - arrowDir * hs, y - hs);
+    ctx.moveTo(bx, y); ctx.lineTo(bx - arrowDir * hs, y + hs);
+    ctx.stroke();
+  }
+
+  drawIndicator(W / 2 + 60, H - 90, '3', 1,  state.onboardExpanded);
+  drawIndicator(W / 2 - 60, H - 50, '4', -1, state.onboardCompressed);
+
+  // Skip hint — above title
+  ctx.globalAlpha = fadeAlpha * 0.7;
+  ctx.fillStyle = C.accent; ctx.font = '24px Courier New'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('\u2191 SKIP PRACTICE   \u00b7   \u2193 SKIP ALL', W / 2, H * 0.38 - 60);
+
+
+  ctx.restore();
+}
+
+function drawWaitingNavigation() {
+  const pulse = 0.5 + Math.sin(state.tick * 0.06) * 0.4;
+  const done = state.transitionTimer > 0;
+  ctx.save();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+  ctx.globalAlpha = done ? 0.6 : pulse;
+  ctx.fillStyle = done ? C.ok : C.accent;
+  ctx.font = 'bold 32px Courier New';
+  ctx.fillText(done ? 'NICE' : 'MOVE THE FOCUS', W / 2, H * 0.38);
+
+  if (!done) {
+    const drawDir = (label, isDone, x) => {
+      ctx.globalAlpha = isDone ? 0.9 : pulse * 0.4;
+      ctx.fillStyle = isDone ? C.ok : C.accent;
+      ctx.font = 'bold 108px Courier New';
+      ctx.fillText(label, x, H - 90);
+      if (isDone) {
+        ctx.font = '14px Courier New';
+        ctx.fillText('DONE', x, H - 30);
+      }
+    };
+    drawDir('\u2190', state.onboardNavLeft,  W / 2 - 120);
+    drawDir('\u2192', state.onboardNavRight, W / 2 + 120);
+  }
+
+  ctx.globalAlpha = 0.5;
+  ctx.fillStyle = C.accent; ctx.font = '24px Courier New';
+  ctx.fillText('\u2191 SKIP PRACTICE   \u00b7   \u2193 SKIP ALL', W / 2, H * 0.38 - 60);
+
+  ctx.restore();
+}
+
+function drawWaitingAction() {
+  const fadeAlpha = state.transitionTimer === 0 ? 1 : Math.max(0, (state.transitionTimer - 30) / 30);
+  const pulse = 0.5 + Math.sin(state.tick * 0.06) * 0.4;
+  const wrongChar = state.chars[state.onboardWrongCharId];
+  const holding = state.transferFrom === state.onboardWrongCharId;
+  const onWrong = state.cursor === state.onboardWrongCharId;
+
+  ctx.save();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+  // Fast white flicker on held piece (after SELECT — breaks the usual pattern)
+  if (holding && !state.onboardActionTaken && wrongChar && wrongChar.slot !== null && wrongChar.slot !== -1) {
+    const sc = elemScale;
+    const sy = wrongChar.y - Math.round(52 * sc);
+    const hy = sy - Math.round(42 * sc);
+    if ((state.tick % 6) < 3) {
+      const s = SHAPES[wrongChar.slot % SHAPES.length];
+      const sz = Math.max(3, Math.round(5 * sc));
+      const cx = wrongChar.x, cy = hy + Math.round(8 * sc);
+      ctx.globalAlpha = fadeAlpha * 0.9;
+      ctx.fillStyle = '#ffffff';
+      s.forEach((row, ry) => row.forEach((cell, rx) => {
+        if (!cell) return;
+        ctx.fillRect(cx + rx * sz - sz, cy + ry * sz - sz, sz - 1, sz - 1);
+      }));
+    }
+  }
+
+  // Central instruction text — three states
+  let text, textColor;
+  if (state.onboardActionTaken) {
+    text = 'DONE'; textColor = C.ok;
+  } else if (holding) {
+    text = 'PASS IT OR DROP IT'; textColor = C.accent;
+  } else if (onWrong) {
+    text = 'SELECT OR DROP'; textColor = C.accent;
+  } else {
+    text = '\u2190 ' + (ROLES[state.onboardWrongCharId] || '?') + ' \u2192'; textColor = C.bright;
+  }
+  ctx.globalAlpha = fadeAlpha * (state.onboardActionTaken ? 0.6 : pulse);
+  ctx.fillStyle = textColor;
+  ctx.font = 'bold 32px Courier New';
+  ctx.fillText(text, W / 2, H * 0.38);
+
+  // B1 / B2 indicators — only when onWrong or holding
+  if ((onWrong || holding) && !state.onboardActionTaken) {
+    const cursorChar = state.chars[state.cursor];
+    const passActive = holding && wrongChar && cursorChar &&
+      cursorChar.id !== wrongChar.id &&
+      cursorChar.slot === null &&
+      cursorChar.collapseLevel === 0 &&
+      cursorChar.slotNeeded === wrongChar.slot;
+
+    const drawBtn = (x, y, num, actionCode, label, color, active) => {
+      const r = 24;
+      const isUsed = state.onboardActionTaken && state.onboardActionUsed === actionCode;
+      if (state.onboardActionTaken && !isUsed) return;
+      ctx.globalAlpha = fadeAlpha * (isUsed ? 0.6 : (active ? pulse : 0.25));
+      const c = isUsed ? C.ok : (active ? color : C.mid);
+      ctx.fillStyle = 'rgba(10,10,10,0.6)';
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = c; ctx.lineWidth = active && !isUsed ? 2.5 : 1.5;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = c; ctx.font = 'bold 54px Courier New'; ctx.fillText(num, x, y);
+      ctx.font = '11px Courier New'; ctx.fillText(label, x, y + r + 12);
+    };
+
+    if (holding) {
+      drawBtn(W / 2 - 80, H - 60, '1', 'P1_1', 'PASS', C.ok, passActive);
+      drawBtn(W / 2 + 80, H - 60, '2', 'P1_2', 'DROP', C.danger, true);
+    } else {
+      drawBtn(W / 2 - 80, H - 60, '1', 'P1_1', 'SELECT', C.ok, true);
+      drawBtn(W / 2 + 80, H - 60, '2', 'P1_2', 'DROP', C.danger, true);
+    }
+  }
+
+  // Skip hint
+  ctx.globalAlpha = fadeAlpha * 0.7;
+  ctx.fillStyle = C.accent; ctx.font = '24px Courier New'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('\u2191 SKIP PRACTICE   \u00b7   \u2193 SKIP ALL', W / 2, H * 0.38 - 60);
+
+  ctx.restore();
 }
 
 function drawSlot(c) {
@@ -655,9 +975,11 @@ function drawSlot(c) {
     ctx.globalAlpha = 1;
   }
 
-  ctx.fillStyle = reduced ? '#333' : C.mid;
-  ctx.font = slotFont; ctx.textAlign = 'center';
-  ctx.fillText(c.role, c.x, c.y + Math.round(26 * sc));
+  if (c.id !== state.cursor) {
+    ctx.fillStyle = reduced ? '#333' : C.mid;
+    ctx.font = slotFont; ctx.textAlign = 'center';
+    ctx.fillText(c.role, c.x, c.y + Math.round(26 * sc));
+  }
 }
 
 function drawMiniShape(cx, cy, type, sc) {
@@ -707,6 +1029,8 @@ function drawUI() {
     let cx = W / 2 - tw / 2;
     for (const [t, col] of segs) { ctx.fillStyle = col; ctx.fillText(t, cx, y); cx += ctx.measureText(t).width; }
   }
+
+  if (state.phase !== 'playing') return; // no hints during onboarding phases
 
   if (state.transferFrom !== null) {
     // Contextual: piece in hand — tell player what to do
