@@ -1248,6 +1248,7 @@ let nextBeat   = 0;
 function initAudio() {
   if (audioCtx) return;
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  audioCtx.resume();
 
   // Reverb impulse (white noise × exponential decay)
   const reverb  = audioCtx.createConvolver();
@@ -1322,6 +1323,7 @@ function scheduleArp() {
 
 function updateAudio() {
   if (!A || !audioCtx || !state || A.ending) return;
+  if (audioCtx.state === 'suspended') audioCtx.resume();
   const { phase, subdivTimer, subdivTimerMax, chars, firstPieceLanded } = state;
   const now = audioCtx.currentTime, ramp = 0.3;
 
