@@ -1246,9 +1246,16 @@ let arpIdx     = 0;
 let nextBeat   = 0;
 
 function initAudio() {
-  if (audioCtx) return;
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  audioCtx.resume();
+  if (!audioCtx) {
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch(e) { return; }
+    buildAudioGraph();
+  }
+  if (audioCtx.state !== 'running') audioCtx.resume().catch(() => {});
+}
+
+function buildAudioGraph() {
 
   // Reverb impulse (white noise × exponential decay)
   const reverb  = audioCtx.createConvolver();
@@ -1401,4 +1408,6 @@ function audioOnGameOver() {
   }, 2400);
 }
 
-window.addEventListener('keydown', initAudio, { once: true });
+['keydown', 'pointerdown', 'touchstart'].forEach(evt =>
+  window.addEventListener(evt, initAudio)
+);
